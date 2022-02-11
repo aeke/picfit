@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/color"
 	"image/color/palette"
 	"image/draw"
 	"image/gif"
@@ -11,7 +12,11 @@ import (
 	"image/png"
 	"io"
 	"math"
+	"os"
+	"strconv"
+	"strings"
 
+	"github.com/cenkalti/dominantcolor"
 	"github.com/disintegration/imaging"
 
 	imagefile "github.com/thoas/picfit/image"
@@ -38,7 +43,36 @@ var (
 	}
 )
 
+type Hex string
+
+type RGB struct {
+	Red   uint8
+	Green uint8
+	Blue  uint8
+}
+
 type GoImage struct{}
+
+func (h Hex) toRGB() (RGB, error) {
+	return Hex2RGB(h)
+}
+
+func Hex2RGB(hex Hex) (RGB, error) {
+	var rgb RGB
+	values, err := strconv.ParseUint(string(hex), 16, 32)
+
+	if err != nil {
+		return RGB{}, err
+	}
+
+	rgb = RGB{
+		Red:   uint8(values >> 16),
+		Green: uint8((values >> 8) & 0xFF),
+		Blue:  uint8(values & 0xFF),
+	}
+
+	return rgb, nil
+}
 
 func (e *GoImage) String() string {
 	return "goimage"
@@ -221,6 +255,59 @@ func imageToPaletted(img image.Image) *image.Paletted {
 	return pm
 }
 
+func FindDominantColor(img image.Image) string {
+	return dominantcolor.Hex(dominantcolor.Find(img))
+}
+
+func FindLuminenace(items []float32) (result float32) {
+	for _, v := range items {
+		v = v / 255
+		if v <= 0.03928 {
+			return v / 12.92
+		} else {
+			return ((v + 0.55) / 1.055) * 2
+		}
+	}
+	result = (items[0]*0.2126 + items[1]*0.7152 + items[2]*0.07222)
+	return
+}
+func createWatermark(base image.Image) (outImage image.Image) {
+	var _ RGB
+	var hex = Hex(strings.Replace(FindDominantColor(base), "#", "", 1))
+	rgb, _ := Hex2RGB(hex)
+
+	var markPath = "watermark.png"
+	var list []float32
+	list = append(list, float32(rgb.Red))
+	list = append(list, float32(rgb.Green))
+	list = append(list, float32(rgb.Blue))
+	var status = (FindLuminenace(list))
+
+	if status > 1.90 {
+		markPath = "watermark_colored.png"
+	}
+
+	fmt.Print("\n\n")
+	fmt.Print("\n\n")
+	fmt.Print(status)
+	fmt.Print(rgb)
+	baseFile, _ := os.Open(markPath)
+	defer baseFile.Close()
+	mark, _ := png.Decode(baseFile)
+	baseBound := base.Bounds()
+	markBound := mark.Bounds()
+	offset := image.Pt(
+		(baseBound.Size().X/2)-(markBound.Size().X/2),
+		(baseBound.Size().Y/2)-(markBound.Size().Y/2))
+
+	outputImage := image.NewRGBA(baseBound)
+	draw.Draw(outputImage, outputImage.Bounds(), base, image.ZP, draw.Src)
+	draw.DrawMask(outputImage, mark.Bounds().Add(offset), mark, image.ZP, image.NewUniform(color.Alpha{64}), image.ZP, draw.Over)
+	outImage = outputImage
+
+	return
+}
+
 func encode(w io.Writer, img image.Image, format imaging.Format, quality int) error {
 	var err error
 	switch format {
@@ -236,9 +323,9 @@ func encode(w io.Writer, img image.Image, format imaging.Format, quality int) er
 			}
 		}
 		if rgba != nil {
-			err = jpeg.Encode(w, rgba, &jpeg.Options{Quality: quality})
+			err = jpeg.Encode(w, createWatermark(rgba), &jpeg.Options{Quality: quality})
 		} else {
-			err = jpeg.Encode(w, img, &jpeg.Options{Quality: quality})
+			err = jpeg.Encode(w, createWatermark(img), &jpeg.Options{Quality: quality})
 		}
 
 	case imaging.PNG:
